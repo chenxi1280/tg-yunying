@@ -5,7 +5,7 @@ import json
 
 from sqlalchemy import select
 
-from app.models import Task, TgAccount, TgAccountAuthorization
+from app.models import AccountStatus, Task, TgAccount, TgAccountAuthorization
 from app.schemas.task_center import GroupCloneConfig
 from app.services._common import audit
 from .group_clone_runtime_lifecycle import _assert_close_safe
@@ -62,7 +62,7 @@ def _preview(session, task, *, lock):
     target = config.target
     account = _row(session, TgAccount, target.control_account_id, lock=lock)
     if (account is None or account.tenant_id != task.tenant_id or account.deleted_at is not None
-            or account.status != 'active'):
+            or account.status != AccountStatus.ACTIVE.value):
         raise ValueError('group_clone_control_account_unavailable')
     old = _row(session, TgAccountAuthorization, target.control_authorization_id, lock=lock)
     new = _row(session, TgAccountAuthorization, account.current_authorization_id, lock=lock)

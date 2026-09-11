@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AuditLog, Task, Tenant, TgAccount, TgAccountAuthorization
+from app.models import AccountStatus, Action, AuditLog, Task, Tenant, TgAccount, TgAccountAuthorization
 from app.schemas.task_center import GroupCloneConfig
 from app.services.task_center.group_clone_authorization_refresh import (
     apply_control_authorization_refresh, preview_control_authorization_refresh,
@@ -31,7 +31,7 @@ def scope(owner_engine):
     with Session(owner_engine) as db:
         db.add(Tenant(id=1, name='clone'))
         db.flush()
-        account = TgAccount(id=102, tenant_id=1, display_name='control', phone_masked='test-control', status='active')
+        account = TgAccount(id=102, tenant_id=1, display_name='control', phone_masked='test-control', status=AccountStatus.ACTIVE.value)
         db.add(account)
         db.flush()
         old = TgAccountAuthorization(id=202, tenant_id=1, account_id=102, is_current=False,
@@ -64,7 +64,7 @@ def test_refresh_preserves_identity_and_old_authorization_with_audit(scope):
     assert db.scalar(select(AuditLog).where(AuditLog.target_id == task.id)) is not None
 
 
-@pytest.mark.parametrize('conflict', ['revision', 'digest', 'health', 'running', 'unknown'])
+@pytest.mark.parametrize('conflict', ['revision', 'digest', 'health', 'account_status', 'running', 'unknown'])
 def test_refresh_rejects_drift_and_unresolved_execution(scope, conflict):
     db, task, account, old, new = scope
     preview = preview_control_authorization_refresh(db, task.id, tenant_id=1)
@@ -74,6 +74,8 @@ def test_refresh_rejects_drift_and_unresolved_execution(scope, conflict):
         new.telegram_user_id_digest = 'different-user'
     if conflict == 'health':
         new.health_status = 'invalid'
+    if conflict == 'account_status':
+        account.status = AccountStatus.DISABLED.value
     if conflict == 'running':
         task.status = 'running'
     if conflict == 'unknown':
